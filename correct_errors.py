@@ -9,7 +9,8 @@ from stutter_corrector import StutRCorrector
 
 def main():
     parser = argparse.ArgumentParser(description="Script for PCR stutter correction.")
-    parser.add_argument("--dst-path", type=str, required=True)
+    parser.add_argument("--logs-dir", type=str, required=True)
+    parser.add_argument("--tag", type=str, required=True)
     parser.add_argument(
         "--bam", type=str, help="Path to Input Single Cell BAM", required=True
     )
@@ -18,20 +19,28 @@ def main():
 
     args = parser.parse_args()
 
+    logs_dir = os.path.join(args.logs_dir, args.tag)
+    os.mkdir(logs_dir)
+
     bam = pysam.AlignmentFile(args.bam)
     vcf = FilestreamVCF(args.vcf)
 
     print("Correcting errors.\n")
-    stutrcor = StutRCorrector(vcf, bam)
-    rm_reads = stutrcor()
+    stutter_corrector = StutRCorrector(vcf, bam)
+    stutter_corrector()
 
-    bam_out = pysam.AlignmentFile(args.dst_path, "w", template=bam)
-    print(f"\n Saving new bam in {args.dst_path}")
+    info_path = os.path.join(logs_dir, "info.h5")
+    print(f"Saving info in {info_path}")
+    stutter_corrector.save_info(info_path)
+
+    bam_path = os.path.join(logs_dir, "output.bam")
+    bam_out = pysam.AlignmentFile(bam_path, "w", template=bam)
+    print(f"\n Saving new bam in {bam_path}")
     n_parsed = 0
     n_wrote = 0
     log_every = args.write_log_every
     for read in bam.fetch():
-        if read.query_name not in rm_reads:
+        if read.query_name not in stutter_corrector.rm_reads:
             bam_out.write(read)
             n_wrote += 1
         n_parsed += 1

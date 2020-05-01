@@ -17,7 +17,7 @@ class StutRCorrector:
         self.pad_left = pad_left
         self.pad_right = pad_right
 
-    def __call_(self):
+    def __call__(self):
 
         rm_reads = set()
         n_corr = 0
@@ -27,7 +27,7 @@ class StutRCorrector:
         for site in self.vcf:
 
             log_i += 1
-            if log_i and log_i % log_every == 0:
+            if log_i and log_i % self.log_every == 0:
                 print(
                     f"Site {log_i}, removed {len(rm_reads)} reads across {n_corr} UMI families out of {n_tot}."
                 )

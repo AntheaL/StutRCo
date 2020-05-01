@@ -102,3 +102,25 @@ def fetch_indels(read, region):
     deletions = parse_changes(cig[9:-11], "D")
     insertions = parse_insertions(cig[:9], cig[9:-11], cig[-11:])
     return deletions, insertions
+
+
+def overlap_noise(family, site, unique=False):
+
+    start, stop = site["pos"], site["pos"] + len(site["ref"])
+    region = start - 10, stop + 10
+
+    deletions, insertions = [], []
+    for read in family:
+        d, i = fetch_indels(read, region)
+        deletions.append(d)
+        insertions.append(i)
+
+    if unique:
+        uni_d, counts_d = np.unique(deletions, return_counts=True)
+        uni_i, counts_i = np.unique(insertions, return_counts=True)
+        return dict(
+            uni=np.concatenate([uni_i, -uni_d]),
+            counts=np.concatenate([counts_i, counts_d]),
+        )
+
+    return [i - d for i, d in zip(insertions, deletions)]

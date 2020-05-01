@@ -4,7 +4,7 @@ import argparse
 import pysam
 
 from reader import FilestreamVCF
-from util import error_correction
+from stutter_corrector import StutRCorrector
 
 
 def main():
@@ -22,7 +22,8 @@ def main():
     vcf = FilestreamVCF(args.vcf)
 
     print("Correcting errors.\n")
-    rm_reads = error_correction(vcf, bam)
+    stutrcor = StutRCorrector(vcf, bam)
+    rm_reads = stutrcor()
 
     bam_out = pysam.AlignmentFile(args.dst_path, "w", template=bam)
     print(f"\n Saving new bam in {args.dst_path}")

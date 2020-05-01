@@ -97,11 +97,26 @@ def parse_insertions(f_cig, m_cig, e_cig):
     return parse_changes(m_cig, "I")
 
 
+def fetch_snvs(read, region):
+    ref, cig = expanded_seq(read, region)
+    return [i for i,c in enumerate(cigar) if c=='X']
+
+
 def fetch_indels(read, region):
     ref, cig = expanded_seq(read, region)
     deletions = parse_changes(cig[9:-11], "D")
     insertions = parse_insertions(cig[:9], cig[9:-11], cig[-11:])
     return deletions, insertions
+
+
+def overlap_snvs(famly, site):
+    start, stop = site["pos"], site["pos"] + len(site["ref"])
+    region = start - 10, stop + 10
+    snvs = dict()
+    for read in family:
+        positions = fetch_snvs(read, region)
+        for i in positions:
+            snvs[i] = snvs.get(i, 0) + 1
 
 
 def overlap_noise(family, site, unique=False):

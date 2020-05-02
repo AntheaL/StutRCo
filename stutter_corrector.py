@@ -11,8 +11,8 @@ from read_util import (
 
 
 class StutRCorrector:
-    def __init__(self, vcf, bam, log_every=1000, pad_left=15, pad_right=20):
-        self.vcf = vcf
+    def __init__(self, bed, bam, log_every=50000, pad_left=15, pad_right=20):
+        self.bed = bed
         self.bam = bam
         self.log_every = log_every
         self.pad_left = pad_left
@@ -25,12 +25,12 @@ class StutRCorrector:
 
     def __call__(self):
         log_i = 0
-        for site in self.vcf:
+        for site in self.bed:
 
             self.info["global"]["n_umi"].append(0)
             self.info["global"]["n_reads"].append(0)
             self.info["global"]["chrom"].append(int(site["chrom"]) if site["chrom"].isdigit() else ord(site["chrom"]))
-            self.info["global"]["pos"].append(site["pos"])
+            self.info["global"]["pos"].append(site["start"])
 
             log_i += 1
             if log_i and log_i % self.log_every == 0:
@@ -101,7 +101,7 @@ class StutRCorrector:
             )
             self.info["umi_count"].append(indels_by_family[umi][x])
             self.info["chrom"].append(int(site["chrom"]) if site["chrom"].isdigit() else ord(site["chrom"]))
-            self.info["pos"].append(site["pos"])
+            self.info["pos"].append(site["start"])
 
     def get_site_umi_families(self, site):
         """
@@ -109,14 +109,12 @@ class StutRCorrector:
         Reads are added to read_dict until a pair is found.
         """
         cell_dict = {}
-        start = site["pos"] - self.pad_left
-        stop = site["pos"] + len(site["ref"]) + self.pad_right
+        start = site["start"] - self.pad_left
+        stop = site["stop"] + self.pad_right
         for read in self.bam.fetch(site["chrom"], max(start, 1), stop):
             if read.is_secondary or read.is_supplementary:
                 continue
-            if not covers_str(
-                read, dict(start=site["pos"], stop=site["pos"] + len(site["ref"]))
-            ):
+            if not covers_str(read, site):
                 continue
             try:
                 cell_barcode = read.get_tag("CB")

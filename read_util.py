@@ -106,8 +106,7 @@ def fetch_indels(read, region):
 
 def overlap_noise(family, site, unique=False):
 
-    start, stop = site["pos"], site["pos"] + len(site["ref"])
-    region = start - 10, stop + 10
+    region = site["start"] - 10, site["stop"] + 10
 
     deletions, insertions = [], []
     for read in family:

@@ -30,15 +30,12 @@ class FilestreamBED(Filestream):
         if line.startswith("#"):
             return
         try:
-            line = line.strip().replace("chr", "").upper().split("\t")
+            line = line.strip().replace("chr", "").upper().split()
             region = {
                 "chrom": line[0],
                 "start": int(line[1]),
                 "stop": int(line[2]),
                 "motif_len": int(line[3]),
-                "num_ref_units": float(line[4]),
-                "STR_id": line[5],
-                "motif": line[6],
             }
             return region
         except (ValueError, IndexError):

@@ -3,7 +3,7 @@ import os
 import argparse
 import pysam
 
-from reader import FilestreamVCF
+from reader import FilestreamBED
 from stutter_corrector import StutRCorrector
 
 
@@ -15,7 +15,7 @@ def main():
         "--bam", type=str, help="Path to Input Single Cell BAM", required=True
     )
     parser.add_argument("--write-log-every", type=int, required=False, default=5000000)
-    parser.add_argument("--vcf", type=str, help="Path to Variant VCF", required=True)
+    parser.add_argument("--bed", type=str, help="Path to Bed with STR regions", required=True)
 
     args = parser.parse_args()
 
@@ -23,10 +23,10 @@ def main():
     os.mkdir(logs_dir)
 
     bam = pysam.AlignmentFile(args.bam)
-    vcf = FilestreamVCF(args.vcf)
+    bed = FilestreamBED(args.bed)
 
     print("Correcting errors.\n")
-    stutter_corrector = StutRCorrector(vcf, bam)
+    stutter_corrector = StutRCorrector(bed, bam)
     stutter_corrector()
 
     info_path = os.path.join(logs_dir, "info.h5")

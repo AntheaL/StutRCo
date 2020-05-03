@@ -23,24 +23,28 @@ class StutRCorrector:
         self.info = dict(cell_freq=[], umi_freq=[], umi_count=[], chrom=[], pos=[])
         self.info["global"] = dict(n_umi=[], n_reads=[], chrom=[], pos=[])
 
+
     def __call__(self):
-        log_i = 0
+        self.iter = 0
         for site in self.bed:
+            self.process_site(site)
 
-            self.info["global"]["n_umi"].append(0)
-            self.info["global"]["n_reads"].append(0)
-            self.info["global"]["chrom"].append(int(site["chrom"]) if site["chrom"].isdigit() else ord(site["chrom"]))
-            self.info["global"]["pos"].append(site["start"])
+    def process_site(self, site):
 
-            log_i += 1
-            if log_i and log_i % self.log_every == 0:
-                print(
-                    f"Site {log_i}, removed {len(self.rm_reads)} reads across {self.n_corr} UMI families out of {self.n_umi}."
-                )
-            cell_dict = self.get_site_umi_families(site)
-            for cell_barcode, umi_families in cell_dict.items():
-                self.parse_families(site, umi_families)
-                self.info["global"]["n_umi"][-1] += len(umi_families)
+        self.info["global"]["n_umi"].append(0)
+        self.info["global"]["n_reads"].append(0)
+        self.info["global"]["chrom"].append(int(site["chrom"]) if site["chrom"].isdigit() else ord(site["chrom"]))
+        self.info["global"]["pos"].append(site["start"])
+
+        self.iter += 1
+        if self.log_every and self.iter % self.log_every == 0:
+            print(
+                f"Site {self.iter}, removed {len(self.rm_reads)} reads across {self.n_corr} UMI families out of {self.n_umi}."
+            )
+        cell_dict = self.get_site_umi_families(site)
+        for cell_barcode, umi_families in cell_dict.items():
+            self.parse_families(site, umi_families)
+            self.info["global"]["n_umi"][-1] += len(umi_families)
 
     def save_info(self, dst_path):
         with h5py.File(dst_path, "w") as dst:
@@ -111,21 +115,23 @@ class StutRCorrector:
         cell_dict = {}
         start = site["start"] - self.pad_left
         stop = site["stop"] + self.pad_right
-        for read in self.bam.fetch(site["chrom"], max(start, 1), stop):
-            if read.is_secondary or read.is_supplementary:
-                continue
-            if not covers_str(read, site):
-                continue
-            try:
-                cell_barcode = read.get_tag("CB")
-            except:
-                continue
+        try:
+            for read in self.bam.fetch(site["chrom"], max(start, 1), stop):
+                if read.is_secondary or read.is_supplementary:
+                    continue
+                if not covers_str(read, site):
+                    continue
+                try:
+                    cell_barcode = read.get_tag("CB")
+                except:
+                    continue
 
-            if cell_barcode in cell_dict:
-                cell_dict[cell_barcode].append(read)
-            else:
-                cell_dict[cell_barcode] = [read]
-
+                if cell_barcode in cell_dict:
+                    cell_dict[cell_barcode].append(read)
+                else:
+                    cell_dict[cell_barcode] = [read]
+        except ValueError:
+            raise ValueError(f"Invalid site {site}")
         del_length_one(cell_dict)
 
         clean_dict = {}

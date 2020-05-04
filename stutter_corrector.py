@@ -31,10 +31,6 @@ class StutRCorrector:
 
     def process_site(self, site):
 
-        self.info["global"]["n_umi"].append(0)
-        self.info["global"]["n_reads"].append(0)
-        self.info["global"]["chrom"].append(int(site["chrom"]) if site["chrom"].isdigit() else ord(site["chrom"]))
-        self.info["global"]["pos"].append(site["start"])
 
         self.iter += 1
         if self.log_every and self.iter % self.log_every == 0:
@@ -42,9 +38,17 @@ class StutRCorrector:
                 f"Site {self.iter}, removed {len(self.rm_reads)} reads across {self.n_corr} UMI families out of {self.n_umi}."
             )
         cell_dict = self.get_site_umi_families(site)
+        n_umi = 0
+        n_reads = 0
         for cell_barcode, umi_families in cell_dict.items():
-            self.parse_families(site, umi_families)
-            self.info["global"]["n_umi"][-1] += len(umi_families)
+            n_reads += self.parse_families(site, umi_families)
+            n_umi += len(umi_families)
+
+        with self.lock:
+            self.info["global"]["n_umi"].append(n_umi)
+            self.info["global"]["n_reads"].append(n_reads)
+            self.info["global"]["chrom"].append(int(site["chrom"]) if site["chrom"].isdigit() else ord(site["chrom"]))
+            self.info["global"]["pos"].append(site["start"])
 
     def save_info(self, dst_path):
         with h5py.File(dst_path, "w") as dst:
@@ -61,9 +65,10 @@ class StutRCorrector:
         indels_by_read = dict()
         indels_by_family = dict()
         n_by_indel = dict()
+        n_reads = 0
 
         for UMI, family in umi_families.items():
-            self.info["global"]["n_reads"][-1] += len(family)
+            n_reads += len(family)
             indels = overlap_noise(family, site)
             uni, counts = np.unique(indels, return_counts=True)
             for u, c in zip(uni, counts):
@@ -97,15 +102,18 @@ class StutRCorrector:
             read = AlignedSegment.from_dict(rdict)
             """
 
-            self.rm_reads.update([r.query_name for j, r in enumerate(family) if j != i])
-            self.n_corr += 1
-            self.info["cell_freq"].append(n_by_indel[x] / n_reads)
-            self.info["umi_freq"].append(
-                indels_by_family[umi][x] / len(indels_by_read[umi])
-            )
-            self.info["umi_count"].append(indels_by_family[umi][x])
-            self.info["chrom"].append(int(site["chrom"]) if site["chrom"].isdigit() else ord(site["chrom"]))
-            self.info["pos"].append(site["start"])
+            with self.lock:
+                self.rm_reads.update([r.query_name for j, r in enumerate(family) if j != i])
+                self.n_corr += 1
+                self.info["cell_freq"].append(n_by_indel[x] / n_reads)
+                self.info["umi_freq"].append(
+                    indels_by_family[umi][x] / len(indels_by_read[umi])
+                )
+                self.info["umi_count"].append(indels_by_family[umi][x])
+                self.info["chrom"].append(int(site["chrom"]) if site["chrom"].isdigit() else ord(site["chrom"]))
+                self.info["pos"].append(site["start"])
+
+        return n_reads
 
     def get_site_umi_families(self, site):
         """

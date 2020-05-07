@@ -26,10 +26,10 @@ def covers_str(read, str_info):
 
 def expanded_seq(read, region):
     cigar_tup_dict = {i: s for i, s in enumerate(["M", "I", "D", "N", "S"])}
-    start, end = read.reference_start, read.reference_end
+    start, end = read["ref_start"], read["ref_end"]
 
-    sequence = read.query_alignment_sequence
-    cigar = read.cigartuples
+    sequence = read["sequence"]
+    cigar = read["cigartuples"]
 
     if cigar[0][0] == 4:
         cigar = cigar[1:]

@@ -1,59 +1,91 @@
-from logging.handlers import RotatingFileHandler
-import multiprocessing, threading, logging, sys, traceback
+import os
+import threading
+import logging
+import logging.config
 
-class MultiProcessingLog(logging.Handler):
-    def __init__(self, name, mode, maxsize, rotate):
-        logging.Handler.__init__(self)
 
-        self._handler = RotatingFileHandler(name, mode, maxsize, rotate)
-        self.queue = multiprocessing.Queue(-1)
+class ThreadLogFilter(logging.Filter):
+    """
+    This filter only show log entries for specified thread name
+    """
 
-        t = threading.Thread(target=self.receive)
-        t.daemon = True
-        t.start()
+    def __init__(self, thread_name, *args, **kwargs):
+        logging.Filter.__init__(self, *args, **kwargs)
+        self.thread_name = thread_name
 
-    def setFormatter(self, fmt):
-        logging.Handler.setFormatter(self, fmt)
-        self._handler.setFormatter(fmt)
+    def filter(self, record):
+        return record.threadName == self.thread_name
 
-    def receive(self):
-        while True:
-            try:
-                record = self.queue.get()
-                self._handler.emit(record)
-            except (KeyboardInterrupt, SystemExit):
-                raise
-            except EOFError:
-                break
-            except:
-                traceback.print_exc(file=sys.stderr)
 
-    def send(self, s):
-        self.queue.put_nowait(s)
+def start_thread_logging(logs_dir):
+    """
+    Add a log handler to separate file for current thread
+    """
+    thread_name = threading.Thread.getName(threading.current_thread())
+    file_name = f'{thread_name}.log'
+    log_file = os.path.join(logs_dir, file_name)
+    log_handler = logging.FileHandler(log_file)
 
-    def _format_record(self, record):
-        # ensure that exc_info and args
-        # have been stringified.  Removes any chance of
-        # unpickleable things inside and possibly reduces
-        # message size sent over the pipe
-        if record.args:
-            record.msg = record.msg % record.args
-            record.args = None
-        if record.exc_info:
-            dummy = self.format(record)
-            record.exc_info = None
+    log_handler.setLevel(logging.DEBUG)
 
-        return record
+    formatter = logging.Formatter(
+        "%(asctime)-15s"
+        "| %(threadName)-7ss"
+        "| %(levelname)-5s"
+        "| %(message)s")
+    log_handler.setFormatter(formatter)
 
-    def emit(self, record):
-        try:
-            s = self._format_record(record)
-            self.send(s)
-        except (KeyboardInterrupt, SystemExit):
-            raise
-        except:
-            self.handleError(record)
+    log_filter = ThreadLogFilter(thread_name)
+    log_handler.addFilter(log_filter)
 
-    def close(self):
-        self._handler.close()
-        logging.Handler.close(self)
+    logger = logging.getLogger()
+    logger.addHandler(log_handler)
+
+    return log_handler
+
+
+def stop_thread_logging(log_handler):
+    logging.getLogger().removeHandler(log_handler)
+    log_handler.close()
+
+
+def config_root_logger(logs_dir):
+    log_file = os.path.join(logs_dir, "main.log")
+
+    formatter = "%(asctime)-15s" \
+                "| %(threadName)-7s" \
+                "| %(levelname)-5s" \
+                "| %(message)s"
+
+    logging.config.dictConfig({
+        'version': 1,
+        'formatters': {
+            'root_formatter': {
+                'format': formatter,
+                'datefmt': '%m-%d %H:%M:%S'
+            }
+        },
+        'handlers': {
+            'console': {
+                'level': 'INFO',
+                'class': 'logging.StreamHandler',
+                'formatter': 'root_formatter'
+            },
+            'log_file': {
+                'class': 'logging.FileHandler',
+                'level': 'DEBUG',
+                'filename': log_file,
+                'formatter': 'root_formatter',
+            }
+        },
+        'loggers': {
+            '': {
+                'handlers': [
+                    'console',
+                    'log_file',
+                ],
+                'level': 'DEBUG',
+                'propagate': True
+            }
+        }
+    })

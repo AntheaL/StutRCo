@@ -45,8 +45,6 @@ class FilestreamBED(Filestream):
                 "stop": int(line[2]),
                 "motif_len": int(line[3]),
             }
-            if region["chrom"]=="00" or region["chrom"]=="0":
-                raise ValueError(f"Invalid region {region} for line {line} stippred from {_line}")
             return region
         except (ValueError, IndexError):
             return

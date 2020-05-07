@@ -1,5 +1,18 @@
 import h5py
+import queue
 import numpy as np
+import logging
+import queue
+import pysam
+import traceback
+import multiprocessing
+
+from operator import iadd
+from multiprocessing import Manager, Process
+
+from logger import start_process_logging, stop_process_logging
+from reader import FilestreamBED
+
 from read_util import (
     covers_str,
     expanded_seq,
@@ -9,56 +22,97 @@ from read_util import (
     overlap_noise,
 )
 
+def str_to_regions(lines):
+    res = []
+    for line in lines:
+        if line.startswith("#"):
+            continue
+        try:
+            line = line.strip().replace("chr", "").upper().split()
+            region = {
+                "chrom": line[0],#.split('_')[0],
+                "start": int(line[1]),
+                "stop": int(line[2]),
+                "motif_len": int(line[3]),
+            }
+            res.append(region)
+        except (ValueError, IndexError):
+            continue
+    return res
 
-class StutRCorrector:
-    def __init__(self, bed, bam, log_every=50000, pad_left=15, pad_right=20):
-        self.bed = bed
-        self.bam = bam
+class StutRCorrector(Process):
+    def __init__(self, sites, bam, logs_dir, name, log_every=25000, batch_size=10000, pad_left=15, pad_right=20):
+        super().__init__()
+        multiprocessing.current_process().name = name
+        self.sites = str_to_regions(sites)
+        self.bam = pysam.AlignmentFile(bam)
+        self.logs_dir = logs_dir
         self.log_every = log_every
         self.pad_left = pad_left
         self.pad_right = pad_right
-        self.rm_reads = set()
-        self.n_umi = 0
+        self.batch_size = batch_size
+        self.iter = 0
         self.n_corr = 0
+        self.n_umi = 0
+        self.rm_reads = []
         self.info = dict(cell_freq=[], umi_freq=[], umi_count=[], chrom=[], pos=[])
         self.info["global"] = dict(n_umi=[], n_reads=[], chrom=[], pos=[])
 
+    def run(self):
+        log_handler=start_process_logging(self.logs_dir)
+        try:
+            for site in self.sites:
+                self.iter += 1
+                cell_dict = self.get_cell_families(site)
+                self.process_site(site, cell_dict)
+                if self.iter%self.log_every==0:
+                    logging.info(
+                        f"Iteration {self.iter}, removed {len(self.rm_reads)} reads across {self.n_umi} umi families."
+                    )
+        except Exception as e:
+            tb = traceback.format_exc()
+            logging.error(tb, e)
+        stop_process_logging(log_handler)
 
-    def __call__(self):
-        self.iter = 0
-        for site in self.bed:
-            self.process_site(site)
 
-    def process_site(self, site):
+    def get_cell_families(self, site):
+        """
+        Generate cell barcode clusters in a BAM file or within a region string.
+        Reads are added to read_dict until a pair is found.
+        """
+        cell_dict = {}
+        start = site["start"] - self.pad_left
+        stop = site["stop"] + self.pad_right
+        try:
+            for read in self.bam.fetch(site["chrom"], max(start, 1), stop):
+                if read.is_secondary or read.is_supplementary:
+                    continue
+                if not covers_str(read, site):
+                    continue
+                try:
+                    cell_barcode = read.get_tag("CB")
+                except:
+                    continue
+                cell_dict[cell_barcode] = cell_dict.get(cell_barcode, []) + [to_dict(read)]
+        except ValueError:
+            raise ValueError(f"Invalid site {site}")
+        return cell_dict
 
-
-        self.iter += 1
-        if self.log_every and self.iter % self.log_every == 0:
-            print(
-                f"Site {self.iter}, removed {len(self.rm_reads)} reads across {self.n_corr} UMI families out of {self.n_umi}."
-            )
-        cell_dict = self.get_site_umi_families(site)
+    def process_site(self, site, cell_dict):
         n_umi = 0
         n_reads = 0
+        cell_dict = get_umi_families(cell_dict)
         for cell_barcode, umi_families in cell_dict.items():
-            n_reads += self.parse_families(site, umi_families)
+            self.n_umi += len(umi_families)
+            self.parse_families(site, umi_families)
             n_umi += len(umi_families)
-
-        with self.lock:
             self.info["global"]["n_umi"].append(n_umi)
             self.info["global"]["n_reads"].append(n_reads)
-            self.info["global"]["chrom"].append(int(site["chrom"]) if site["chrom"].isdigit() else ord(site["chrom"]))
+            self.info["global"]["chrom"].append(
+                int(site["chrom"]) if site["chrom"].isdigit() else ord(site["chrom"])
+            )
             self.info["global"]["pos"].append(site["start"])
 
-    def save_info(self, dst_path):
-        with h5py.File(dst_path, "w") as dst:
-            for key, value in self.info.items():
-                if isinstance(value, dict):
-                    grp = dst.create_group(name=key)
-                    for k,v in value.items():
-                        grp.create_dataset(name=k, data=v)
-                else:
-                    dst.create_dataset(name=key, data=np.array(value))
 
     def parse_families(self, site, umi_families):
 
@@ -76,8 +130,6 @@ class StutRCorrector:
             if len(uni) > 1:
                 indels_by_read[UMI] = indels
                 indels_by_family[UMI] = dict(zip(uni, counts))
-
-        self.n_umi += len(umi_families)
 
         # finding most probable indel
         indel_by_umi = dict()
@@ -102,67 +154,45 @@ class StutRCorrector:
             read = AlignedSegment.from_dict(rdict)
             """
 
-            with self.lock:
-                self.rm_reads.update([r.query_name for j, r in enumerate(family) if j != i])
-                self.n_corr += 1
-                self.info["cell_freq"].append(n_by_indel[x] / n_reads)
-                self.info["umi_freq"].append(
-                    indels_by_family[umi][x] / len(indels_by_read[umi])
-                )
-                self.info["umi_count"].append(indels_by_family[umi][x])
-                self.info["chrom"].append(int(site["chrom"]) if site["chrom"].isdigit() else ord(site["chrom"]))
-                self.info["pos"].append(site["start"])
+            self.rm_reads += [r["name"] for j, r in enumerate(family) if j != i]
+            self.info["cell_freq"].append(n_by_indel[x] / n_reads)
+            self.info["umi_freq"].append(indels_by_family[umi][x] / len(indels_by_read[umi]))
+            self.info["umi_count"].append(indels_by_family[umi][x])
+            self.info["chrom"].append(
+                int(site["chrom"]) if site["chrom"].isdigit() else ord(site["chrom"])
+            )
+            self.info["pos"].append(site["start"])
 
-        return n_reads
 
-    def get_site_umi_families(self, site):
-        """
-        Generate cell barcode clusters in a BAM file or within a region string.
-        Reads are added to read_dict until a pair is found.
-        """
-        cell_dict = {}
-        start = site["start"] - self.pad_left
-        stop = site["stop"] + self.pad_right
-        try:
-            for read in self.bam.fetch(site["chrom"], max(start, 1), stop):
-                if read.is_secondary or read.is_supplementary:
-                    continue
-                if not covers_str(read, site):
-                    continue
-                try:
-                    cell_barcode = read.get_tag("CB")
-                except:
-                    continue
+def get_umi_families(cell_dict):
 
-                if cell_barcode in cell_dict:
-                    cell_dict[cell_barcode].append(read)
-                else:
-                    cell_dict[cell_barcode] = [read]
-        except ValueError:
-            raise ValueError(f"Invalid site {site}")
-        del_length_one(cell_dict)
+    del_length_one(cell_dict)
+    clean_dict = {}
+    for cell_barcode, cell_reads in cell_dict.items():
 
-        clean_dict = {}
-        for cell_barcode, cell_reads in cell_dict.items():
+        UMI_families = {}
+        for i, read in enumerate(cell_reads):
+            #logging.warning(f"Skipping read {i} which does not contain 'UB' tag.")
+            umi = read["umi"]
+            if umi is None:
+                continue
+            UMI_families[umi] = UMI_families.get(umi, []) + [read]
+        del_length_one(UMI_families)
 
-            UMI_families = {}
-            for i, read in enumerate(cell_reads):
-                try:
-                    UMI_barcode = read.get_tag("UB")
-                except KeyError:
-                    print(f"Skipping read {i} which does not contain 'UB' tag.")
-                    continue
-                if UMI_barcode in UMI_families:
-                    UMI_families[UMI_barcode].append(read)
-                else:
-                    UMI_families[UMI_barcode] = [read]
-            del_length_one(UMI_families)
+        if len(UMI_families) >= 1:
+            clean_dict[cell_barcode] = UMI_families
 
-            if len(UMI_families) >= 1:
-                clean_dict[cell_barcode] = UMI_families
+    return clean_dict
 
-        return clean_dict
-
+def to_dict(read):
+    return dict(
+        name=read.query_name,
+        ref_start=read.reference_start,
+        ref_end=read.reference_end,
+        sequence=read.query_alignment_sequence,
+        cigartuples=read.cigartuples,
+        umi = read.get_tag('UB') if read.has_tag('UB') else None
+    )
 
 def del_length_one(dict_):
     for key in [k for k in dict_.keys()]:

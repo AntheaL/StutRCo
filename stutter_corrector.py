@@ -22,6 +22,7 @@ from read_util import (
     overlap_noise,
 )
 
+
 def str_to_regions(lines):
     res = []
     for line in lines:
@@ -30,7 +31,7 @@ def str_to_regions(lines):
         try:
             line = line.strip().replace("chr", "").upper().split()
             region = {
-                "chrom": line[0],#.split('_')[0],
+                "chrom": line[0],  # .split('_')[0],
                 "start": int(line[1]),
                 "stop": int(line[2]),
                 "motif_len": int(line[3]),
@@ -40,17 +41,28 @@ def str_to_regions(lines):
             continue
     return res
 
+
 class StutRCorrector(Process):
-    def __init__(self, sites, bam, logs_dir, name, log_every=25000, batch_size=10000, pad_left=15, pad_right=20):
-        super().__init__()
-        multiprocessing.current_process().name = name
+    def __init__(
+        self,
+        sites,
+        bam,
+        logs_dir,
+        send_end,
+        name,
+        log_every=25000,
+        pad_left=15,
+        pad_right=20,
+    ):
+        super().__init__(name=name)
+        # multiprocessing.current_process().name = name
         self.sites = str_to_regions(sites)
         self.bam = pysam.AlignmentFile(bam)
         self.logs_dir = logs_dir
         self.log_every = log_every
+        self.send_end = send_end
         self.pad_left = pad_left
         self.pad_right = pad_right
-        self.batch_size = batch_size
         self.iter = 0
         self.n_corr = 0
         self.n_umi = 0
@@ -59,21 +71,23 @@ class StutRCorrector(Process):
         self.info["global"] = dict(n_umi=[], n_reads=[], chrom=[], pos=[])
 
     def run(self):
-        log_handler=start_process_logging(self.logs_dir)
+        log_handler = start_process_logging(self.logs_dir)
         try:
             for site in self.sites:
                 self.iter += 1
                 cell_dict = self.get_cell_families(site)
                 self.process_site(site, cell_dict)
-                if self.iter%self.log_every==0:
+                if self.iter % self.log_every == 0:
                     logging.info(
-                        f"Iteration {self.iter}, removed {len(self.rm_reads)} reads across {self.n_umi} umi families."
+                        "Iteration {}, removed {} reads across {} umi families out of {}.".format(
+                            self.iter, len(self.rm_reads), self.n_corr, self.n_umi
+                        )
                     )
+            self.send_end.send((self.info, self.rm_reads))
         except Exception as e:
             tb = traceback.format_exc()
             logging.error(tb, e)
         stop_process_logging(log_handler)
-
 
     def get_cell_families(self, site):
         """
@@ -93,26 +107,24 @@ class StutRCorrector(Process):
                     cell_barcode = read.get_tag("CB")
                 except:
                     continue
-                cell_dict[cell_barcode] = cell_dict.get(cell_barcode, []) + [to_dict(read)]
+                cell_dict[cell_barcode] = cell_dict.get(cell_barcode, []) + [
+                    to_dict(read)
+                ]
         except ValueError:
             raise ValueError(f"Invalid site {site}")
         return cell_dict
 
     def process_site(self, site, cell_dict):
-        n_umi = 0
-        n_reads = 0
         cell_dict = get_umi_families(cell_dict)
         for cell_barcode, umi_families in cell_dict.items():
             self.n_umi += len(umi_families)
-            self.parse_families(site, umi_families)
-            n_umi += len(umi_families)
-            self.info["global"]["n_umi"].append(n_umi)
+            n_reads = self.parse_families(site, umi_families)
+            self.info["global"]["n_umi"].append(len(umi_families))
             self.info["global"]["n_reads"].append(n_reads)
             self.info["global"]["chrom"].append(
                 int(site["chrom"]) if site["chrom"].isdigit() else ord(site["chrom"])
             )
             self.info["global"]["pos"].append(site["start"])
-
 
     def parse_families(self, site, umi_families):
 
@@ -136,6 +148,7 @@ class StutRCorrector(Process):
         for umi, v in indels_by_family.items():
             c = list(v.values())
             if len(c) > 1:
+                self.n_corr += 1
                 indel_by_umi[umi] = max(v, key=lambda x: 10 * v[x] + n_by_indel[x])
 
         # assigning a matching read to each UMI and extending site
@@ -143,8 +156,6 @@ class StutRCorrector(Process):
 
         n_reads = sum(list(n_by_indel.values()))
         for umi, x in indel_by_umi.items():
-            i = next(i for i, v in enumerate(indels_by_read[umi]) if v == x)
-
             # TDOO: Extend read
             """
             start = np.min([read.pos for read in family])
@@ -153,15 +164,22 @@ class StutRCorrector(Process):
             pad_read(rdict, start, stop)
             read = AlignedSegment.from_dict(rdict)
             """
-
-            self.rm_reads += [r["name"] for j, r in enumerate(family) if j != i]
+            self.rm_reads += [
+                r["name"]
+                for j, (r, n) in enumerate(zip(family, indels_by_read[umi]))
+                if n == x
+            ]
             self.info["cell_freq"].append(n_by_indel[x] / n_reads)
-            self.info["umi_freq"].append(indels_by_family[umi][x] / len(indels_by_read[umi]))
+            self.info["umi_freq"].append(
+                indels_by_family[umi][x] / len(indels_by_read[umi])
+            )
             self.info["umi_count"].append(indels_by_family[umi][x])
             self.info["chrom"].append(
                 int(site["chrom"]) if site["chrom"].isdigit() else ord(site["chrom"])
             )
             self.info["pos"].append(site["start"])
+
+        return n_reads
 
 
 def get_umi_families(cell_dict):
@@ -172,7 +190,7 @@ def get_umi_families(cell_dict):
 
         UMI_families = {}
         for i, read in enumerate(cell_reads):
-            #logging.warning(f"Skipping read {i} which does not contain 'UB' tag.")
+            # logging.warning(f"Skipping read {i} which does not contain 'UB' tag.")
             umi = read["umi"]
             if umi is None:
                 continue
@@ -184,6 +202,7 @@ def get_umi_families(cell_dict):
 
     return clean_dict
 
+
 def to_dict(read):
     return dict(
         name=read.query_name,
@@ -191,8 +210,9 @@ def to_dict(read):
         ref_end=read.reference_end,
         sequence=read.query_alignment_sequence,
         cigartuples=read.cigartuples,
-        umi = read.get_tag('UB') if read.has_tag('UB') else None
+        umi=read.get_tag("UB") if read.has_tag("UB") else None,
     )
+
 
 def del_length_one(dict_):
     for key in [k for k in dict_.keys()]:

@@ -1,41 +1,39 @@
 import os
-import threading
+import multiprocessing
 import logging
 import logging.config
 
 
-class ThreadLogFilter(logging.Filter):
+class processLogFilter(logging.Filter):
     """
-    This filter only show log entries for specified thread name
+    This filter only show log entries for specified process name
     """
 
-    def __init__(self, thread_name, *args, **kwargs):
+    def __init__(self, process_name, *args, **kwargs):
         logging.Filter.__init__(self, *args, **kwargs)
-        self.thread_name = thread_name
+        self.process_name = process_name
 
     def filter(self, record):
-        return record.threadName == self.thread_name
+        return record.processName == self.process_name
 
 
-def start_thread_logging(logs_dir):
+def start_process_logging(logs_dir):
     """
-    Add a log handler to separate file for current thread
+    Add a log handler to separate file for current process
     """
-    thread_name = threading.Thread.getName(threading.current_thread())
-    file_name = f'{thread_name}.log'
+    process_name = multiprocessing.current_process().name
+    file_name = f"{process_name}.log"
     log_file = os.path.join(logs_dir, file_name)
     log_handler = logging.FileHandler(log_file)
 
     log_handler.setLevel(logging.DEBUG)
 
     formatter = logging.Formatter(
-        "%(asctime)-15s"
-        "| %(threadName)-7ss"
-        "| %(levelname)-5s"
-        "| %(message)s")
+        "%(asctime)s | %(processName)s | %(levelname)s |  %(message)s"
+    )
     log_handler.setFormatter(formatter)
 
-    log_filter = ThreadLogFilter(thread_name)
+    log_filter = processLogFilter(process_name)
     log_handler.addFilter(log_filter)
 
     logger = logging.getLogger()
@@ -44,7 +42,7 @@ def start_thread_logging(logs_dir):
     return log_handler
 
 
-def stop_thread_logging(log_handler):
+def stop_process_logging(log_handler):
     logging.getLogger().removeHandler(log_handler)
     log_handler.close()
 
@@ -52,40 +50,33 @@ def stop_thread_logging(log_handler):
 def config_root_logger(logs_dir):
     log_file = os.path.join(logs_dir, "main.log")
 
-    formatter = "%(asctime)-15s" \
-                "| %(threadName)-7s" \
-                "| %(levelname)-5s" \
-                "| %(message)s"
+    formatter = "%(asctime)s | %(processName)-10s | %(levelname)s | %(message)s"
 
-    logging.config.dictConfig({
-        'version': 1,
-        'formatters': {
-            'root_formatter': {
-                'format': formatter,
-                'datefmt': '%m-%d %H:%M:%S'
-            }
-        },
-        'handlers': {
-            'console': {
-                'level': 'INFO',
-                'class': 'logging.StreamHandler',
-                'formatter': 'root_formatter'
+    logging.config.dictConfig(
+        {
+            "version": 1,
+            "formatters": {
+                "root_formatter": {"format": formatter, "datefmt": "%m-%d %H:%M:%S"}
             },
-            'log_file': {
-                'class': 'logging.FileHandler',
-                'level': 'DEBUG',
-                'filename': log_file,
-                'formatter': 'root_formatter',
-            }
-        },
-        'loggers': {
-            '': {
-                'handlers': [
-                    'console',
-                    'log_file',
-                ],
-                'level': 'DEBUG',
-                'propagate': True
-            }
+            "handlers": {
+                "console": {
+                    "level": "INFO",
+                    "class": "logging.StreamHandler",
+                    "formatter": "root_formatter",
+                },
+                "log_file": {
+                    "class": "logging.FileHandler",
+                    "level": "DEBUG",
+                    "filename": log_file,
+                    "formatter": "root_formatter",
+                },
+            },
+            "loggers": {
+                "": {
+                    "handlers": ["console", "log_file",],
+                    "level": "DEBUG",
+                    "propagate": True,
+                }
+            },
         }
-    })
+    )

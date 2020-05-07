@@ -40,7 +40,7 @@ class FilestreamBED(Filestream):
         try:
             line = _line.strip().replace("chr", "").upper().split()
             region = {
-                "chrom": line[0],#.split('_')[0],
+                "chrom": line[0],  # .split('_')[0],
                 "start": int(line[1]),
                 "stop": int(line[2]),
                 "motif_len": int(line[3]),

@@ -1,4 +1,6 @@
 import h5py
+import sys
+import os
 import queue
 import numpy as np
 import logging
@@ -7,12 +9,14 @@ import pysam
 import traceback
 import multiprocessing
 
+from itertools import compress
 from operator import iadd
 from multiprocessing import Manager, Process
 
 from logger import start_process_logging, stop_process_logging
 from reader import FilestreamBED
 
+from h5_util import save_h5
 from read_util import (
     covers_str,
     expanded_seq,
@@ -23,23 +27,24 @@ from read_util import (
 )
 
 
-def str_to_regions(lines):
-    res = []
-    for line in lines:
+def str_to_regions(lines, chr_tag=""):
+    while lines:
+        line = lines.pop()
         if line.startswith("#"):
             continue
         try:
-            line = line.strip().replace("chr", "").upper().split()
+            line = line.strip().upper().replace("CHR", chr_tag).split()
+            if not (line[0].isdigit() or line[0] in ["X", "Y"]):
+                continue
             region = {
                 "chrom": line[0],  # .split('_')[0],
                 "start": int(line[1]),
                 "stop": int(line[2]),
                 "motif_len": int(line[3]),
             }
-            res.append(region)
+            yield region
         except (ValueError, IndexError):
             continue
-    return res
 
 
 class StutRCorrector(Process):
@@ -53,37 +58,56 @@ class StutRCorrector(Process):
         log_every=25000,
         pad_left=15,
         pad_right=20,
+        chr_tag="",
     ):
         super().__init__(name=name)
-        # multiprocessing.current_process().name = name
-        self.sites = str_to_regions(sites)
+        self.sites = sites
+        self.chr_tag = chr_tag
         self.bam = pysam.AlignmentFile(bam)
         self.logs_dir = logs_dir
-        self.log_every = log_every
+        self.log_every = int(log_every)
         self.send_end = send_end
-        self.pad_left = pad_left
-        self.pad_right = pad_right
+        self.pad_left = int(pad_left)
+        self.pad_right = int(pad_right)
         self.iter = 0
         self.n_corr = 0
         self.n_umi = 0
         self.rm_reads = []
-        self.info = dict(cell_freq=[], umi_freq=[], umi_count=[], chrom=[], pos=[])
-        self.info["global"] = dict(n_umi=[], n_reads=[], chrom=[], pos=[])
+        self.info = dict()
+        self.info["umi"] = dict(
+            cfreq=[],
+            freq=[],
+            count=[],
+            nucl=[],
+            qual=[],
+            avg_qual=[],
+            motif_len=[],
+            alleles=[],
+            chrom=[],
+            pos=[],
+        )
+        self.info["global"] = dict(n_umi=[], n_reads=[], alleles=[], chrom=[], pos=[])
 
     def run(self):
         log_handler = start_process_logging(self.logs_dir)
         try:
-            for site in self.sites:
+            for site in str_to_regions(self.sites):
                 self.iter += 1
-                cell_dict = self.get_cell_families(site)
-                self.process_site(site, cell_dict)
+                cell_dict = get_umi_families(self.get_cell_families(site))
+                for cell_barcode, umi_families in cell_dict.items():
+                    self.parse_families(site, umi_families)
                 if self.iter % self.log_every == 0:
                     logging.info(
                         "Iteration {}, removed {} reads across {} umi families out of {}.".format(
                             self.iter, len(self.rm_reads), self.n_corr, self.n_umi
                         )
                     )
-            self.send_end.send((self.info, self.rm_reads))
+            self.send_end.send(self.rm_reads)
+            dst_path = os.path.join(self.logs_dir, f"info_{self.name}.h5").replace(
+                " ", "-"
+            )
+            logging.info(f"Saving info into temporary file {dst_path}.")
+            save_h5(dst_path, self.info)
         except Exception as e:
             tb = traceback.format_exc()
             logging.error(tb, e)
@@ -114,18 +138,6 @@ class StutRCorrector(Process):
             raise ValueError(f"Invalid site {site}")
         return cell_dict
 
-    def process_site(self, site, cell_dict):
-        cell_dict = get_umi_families(cell_dict)
-        for cell_barcode, umi_families in cell_dict.items():
-            self.n_umi += len(umi_families)
-            n_reads = self.parse_families(site, umi_families)
-            self.info["global"]["n_umi"].append(len(umi_families))
-            self.info["global"]["n_reads"].append(n_reads)
-            self.info["global"]["chrom"].append(
-                int(site["chrom"]) if site["chrom"].isdigit() else ord(site["chrom"])
-            )
-            self.info["global"]["pos"].append(site["start"])
-
     def parse_families(self, site, umi_families):
 
         indels_by_read = dict()
@@ -151,9 +163,6 @@ class StutRCorrector(Process):
                 self.n_corr += 1
                 indel_by_umi[umi] = max(v, key=lambda x: 10 * v[x] + n_by_indel[x])
 
-        # assigning a matching read to each UMI and extending site
-        start, stop = np.inf, 0
-
         n_reads = sum(list(n_by_indel.values()))
         for umi, x in indel_by_umi.items():
             # TDOO: Extend read
@@ -164,22 +173,51 @@ class StutRCorrector(Process):
             pad_read(rdict, start, stop)
             read = AlignedSegment.from_dict(rdict)
             """
-            self.rm_reads += [
-                r["name"]
-                for j, (r, n) in enumerate(zip(family, indels_by_read[umi]))
-                if n == x
-            ]
-            self.info["cell_freq"].append(n_by_indel[x] / n_reads)
-            self.info["umi_freq"].append(
-                indels_by_family[umi][x] / len(indels_by_read[umi])
-            )
-            self.info["umi_count"].append(indels_by_family[umi][x])
-            self.info["chrom"].append(
-                int(site["chrom"]) if site["chrom"].isdigit() else ord(site["chrom"])
-            )
-            self.info["pos"].append(site["start"])
 
-        return n_reads
+            is_concordant = [n == x for n in indels_by_read[umi]]
+            self.rm_reads += [
+                r["name"] for r, b in zip(umi_families[umi], is_concordant) if not b
+            ]
+            nucls = np.unique(
+                list(umi_families[umi][0]["sequence"]), return_counts=True
+            )
+            nmax = np.argmax(nucls[1])
+            n_reads_umi = len(indels_by_read[umi])
+
+            umi_info = dict(
+                cfreq=n_by_indel[x] / n_reads,
+                freq=indels_by_family[umi][x] / n_reads_umi,
+                count=indels_by_family[umi][x],
+                alleles=len(indels_by_family[umi]),
+                qual=sum(
+                    map(
+                        lambda x: x["base_qual"],
+                        compress(umi_families[umi], is_concordant),
+                    )
+                )
+                / sum(is_concordant),
+                avg_qual=sum(map(lambda x: x["base_qual"], umi_families[umi]))
+                / n_reads_umi,
+                nucl=ord(nucls[0][nmax]) + nucls[1][nmax] / np.sum(nucls[1]),
+                motif_len=site["motif_len"],
+                chrom=int(site["chrom"])
+                if site["chrom"].isdigit()
+                else ord(site["chrom"]),
+                pos=site["start"],
+            )
+            for k, v in umi_info.items():
+                self.info["umi"][k].append(v)
+
+        self.n_umi += len(umi_families)
+        global_info = dict(
+            n_umi=len(umi_families),
+            n_reads=n_reads,
+            chrom=int(site["chrom"]) if site["chrom"].isdigit() else ord(site["chrom"]),
+            alleles=len(n_by_indel),
+            pos=site["start"],
+        )
+        for k, v in global_info.items():
+            self.info["global"][k].append(v)
 
 
 def get_umi_families(cell_dict):
@@ -211,6 +249,7 @@ def to_dict(read):
         sequence=read.query_alignment_sequence,
         cigartuples=read.cigartuples,
         umi=read.get_tag("UB") if read.has_tag("UB") else None,
+        base_qual=np.mean(read.query_qualities),
     )
 
 

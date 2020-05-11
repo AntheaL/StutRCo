@@ -1,0 +1,10 @@
+logs_dir: data/
+write_log_every: 5000000
+bam: /gpfs/commons/groups/landau_lab/MSI_Project/RKO/bams/RKO.byCB.rh.bam
+bed: /gpfs/commons/groups/landau_lab/MSI_Project/phobos/genome/hg38.nomono.phobos.forhipstr.endplus1.bed
+
+corrector:
+    #class_name: stutter_corrector.StutRCo
+    pad_left: 20
+    pad_right: 15
+    log_every: 100000

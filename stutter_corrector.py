@@ -93,6 +93,7 @@ class StutRCorrector(Process):
             nucl=[],
             motif_len=[],
             alleles=[],
+            alleles_kept=[],
             chrom=[],
             pos=[],
         )
@@ -172,9 +173,13 @@ class StutRCorrector(Process):
                 indels_by_read[UMI] = indels
                 indels_by_family[UMI] = dict(zip(uni, counts))
 
+        if len(n_by_indel)<2:
+            return
+
         # finding most probable indel
         indel_by_umi = dict()
         n_umi_corr = 0
+
         for umi, v in indels_by_family.items():
             c = list(v.values())
             if len(c) > 1:
@@ -186,14 +191,11 @@ class StutRCorrector(Process):
         n_reads = sum(list(n_by_indel.values()))
         n_reads_corr = 0
 
-        if not indel_by_umi:
-            return
-
         nucls = np.unique(
-            list(umi_families[umi][0].query_alignment_sequence), return_counts=True
+            list(umi_families[UMI][0].query_alignment_sequence), return_counts=True
         )
         nmax = np.argmax(nucls[1])
-        nucl = (ord(nucls[0][nmax]) + nucls[1][nmax] / np.sum(nucls[1]),)
+        nucl = ord(nucls[0][nmax]) + nucls[1][nmax] / np.sum(nucls[1])
 
         for umi, x in indel_by_umi.items():
             # TDOO: Extend read
@@ -219,7 +221,8 @@ class StutRCorrector(Process):
                 count=indels_by_family[umi][x],
                 alleles=len(indels_by_family[umi]),
                 avg_qual=sum(bq) / n_reads_umi,
-                qual=sum(compress(bq, is_concordant)) / sum(is_concordant),
+                qual=sum([x for x, b in zip(bq, is_concordant) if b])
+                / sum(is_concordant),
                 nucl=nucl,
                 motif_len=site["motif_len"],
                 chrom=int(site["chrom"])
@@ -239,6 +242,7 @@ class StutRCorrector(Process):
             motif_len=site["motif_len"],
             chrom=int(site["chrom"]) if site["chrom"].isdigit() else ord(site["chrom"]),
             alleles=len(n_by_indel),
+            alleles_kept=len(set(indel_by_umi.values())),
             pos=site["start"],
         )
         for k, v in global_info.items():

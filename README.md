@@ -1,6 +1,6 @@
 **How to run**
 
-python correct_errors.py --bam [BAM FILE] --bed [BED FILE] --logs-dir [LOGS DIRECTORY] --tag [DIR TAG] --n-workers [NUM WORKERS]
+python correct_errors.py --config --tag  [--n-workers] [--bed] [--bam]
 
 **What it does**
 

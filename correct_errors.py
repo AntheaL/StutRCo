@@ -48,10 +48,12 @@ if __name__ == "__main__":
     if args.bam:
         config["bam"] = args.bam
     assert "bam" in config, "Input bam file was not provided!"
+    logging.info(f"Using bam from {config['bam']}")
 
     if args.bed:
         config["bed"] = args.bed
     assert "bed" in config, "Input bed file was not provided!"
+    logging.info(f"Using bed from {config['bed']}")
 
     with open(os.path.join(logs_dir, "config.yml"), "w") as f:
         yaml.dump(config, f)
@@ -127,7 +129,9 @@ if __name__ == "__main__":
         os.remove(f)
 
     rm_reads = set(open(rm_path).read().splitlines())
-    bam_path = os.path.join(logs_dir, "output.bam")
+    head, ext = os.path.splitext(config["bam"])
+    bam_name = os.path.basename(head) + "_out" + ext
+    bam_path = os.path.join(logs_dir, bam_name)
     bam_in = pysam.AlignmentFile(config["bam"])
     bam_out = pysam.AlignmentFile(bam_path, "w", template=bam_in)
     logging.info(f"Saving new bam in {bam_path}")

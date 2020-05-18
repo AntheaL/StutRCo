@@ -83,7 +83,8 @@ class StutRCorrector(Process):
             motif_len=[],
             alleles=[],
             chrom=[],
-            pos=[],
+            start=[],
+            stop=[],
         )
         self.info["global"] = dict(
             n_umi=[],
@@ -95,7 +96,8 @@ class StutRCorrector(Process):
             alleles=[],
             alleles_kept=[],
             chrom=[],
-            pos=[],
+            start=[],
+            stop=[],
         )
 
     def run(self):
@@ -162,6 +164,7 @@ class StutRCorrector(Process):
         indels_by_family = dict()
         n_by_indel = dict()
         n_reads = 0
+        alleles_kept = set()
 
         for UMI, family in umi_families.items():
             n_reads += len(family)
@@ -172,8 +175,10 @@ class StutRCorrector(Process):
             if len(uni) > 1:
                 indels_by_read[UMI] = indels
                 indels_by_family[UMI] = dict(zip(uni, counts))
+            else:
+                alleles_kept.add(uni[0])
 
-        if len(n_by_indel)<2:
+        if len(n_by_indel) < 2:
             return
 
         # finding most probable indel
@@ -182,10 +187,10 @@ class StutRCorrector(Process):
 
         for umi, v in indels_by_family.items():
             c = list(v.values())
-            if len(c) > 1:
-                n_umi_corr += 1
-                indel_by_umi[umi] = max(v, key=lambda x: 10 * v[x] + n_by_indel[x])
+            n_umi_corr += 1
+            indel_by_umi[umi] = max(v, key=lambda x: 10 * v[x] + n_by_indel[x])
 
+        alleles_kept.update(set(indel_by_umi.values()))
         self.n_corr += n_umi_corr
         self.n_umi += len(umi_families)
         n_reads = sum(list(n_by_indel.values()))
@@ -228,7 +233,8 @@ class StutRCorrector(Process):
                 chrom=int(site["chrom"])
                 if site["chrom"].isdigit()
                 else ord(site["chrom"]),
-                pos=site["start"],
+                start=site["start"],
+                stop=site["stop"],
             )
             for k, v in umi_info.items():
                 self.info["umi"][k].append(v)
@@ -242,8 +248,9 @@ class StutRCorrector(Process):
             motif_len=site["motif_len"],
             chrom=int(site["chrom"]) if site["chrom"].isdigit() else ord(site["chrom"]),
             alleles=len(n_by_indel),
-            alleles_kept=len(set(indel_by_umi.values())),
-            pos=site["start"],
+            alleles_kept=len(alleles_kept),
+            start=site["start"],
+            stop=site["stop"],
         )
         for k, v in global_info.items():
             self.info["global"][k].append(v)

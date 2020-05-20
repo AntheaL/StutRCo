@@ -92,9 +92,10 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Script for PCR stutter correction.")
     parser.add_argument("--config", type=str, required=True)
+    parser.add_argument("--tag", type=str, required=True)
     parser.add_argument("--bam", type=str, required=False)
     parser.add_argument("--bed", type=str, required=False)
-    parser.add_argument("--tag", type=str, required=True)
+    parser.add_argument("--cells", type=str, required=False)
     parser.add_argument("--n-workers", type=int, required=False)
 
     args = parser.parse_args()
@@ -124,6 +125,9 @@ if __name__ == "__main__":
     assert "bed" in config, "Input bed file was not provided!"
     logging.info(f"Using bed from {config['bed']}")
 
+    if args.cells:
+        config["cells"] = args.cells
+
     with open(os.path.join(logs_dir, "config.yml"), "w") as f:
         yaml.dump(config, f)
 
@@ -148,9 +152,10 @@ if __name__ == "__main__":
         p = StutRCorrector(
             sites[idx[i] : idx[i + 1]],
             bam=config["bam"],
+            cells=config.get("cells", None),
             logs_dir=logs_dir,
             # send_end=send_end,
-            name="process-" + str(i),
+            name="process-" + str(i).zfill(2),
             **config["corrector"],
         )
         jobs.append(p)

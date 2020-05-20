@@ -48,6 +48,7 @@ class StutRCorrector(Process):
         logs_dir,
         # send_end,
         name,
+        cells=None,
         log_every=25000,
         pad_left=15,
         pad_right=20,
@@ -95,7 +96,12 @@ class StutRCorrector(Process):
             stop=[],
         )
         self.sites_kept = set()
-        self.bc_kept = set()
+        if cells is not None:
+            self.cells = set(open(cells, "r").read().splitlines())
+            self.has_cells = True
+        else:
+            self.cells = set()
+            self.has_cells = False
         self.site_keys = ["chrom", "start", "stop", "motif_len"]
         self.variant_f = open(self.pr_path.format("variants", "txt"), "w")
         self.variant_f.write(
@@ -111,7 +117,8 @@ class StutRCorrector(Process):
     def run(self):
         log_handler = start_process_logging(self.logs_dir)
         try:
-
+            if self.has_cells:
+                logging.info(f"The population has {len(self.cells)} cells.")
             for site in str_to_regions(self.sites, self.site_keys):
                 self.iter += 1
                 start = site["start"] - self.pad_left
@@ -120,7 +127,12 @@ class StutRCorrector(Process):
                 cell_dict = get_umi_families(cell_dict)
                 vars = []
                 for cell_barcode, umi_families in cell_dict.items():
-                    vars.append(self.parse_families(site, cell_barcode, umi_families))
+                    if not self.has_cells or (
+                        self.has_cells and cell_barcode in self.cells
+                    ):
+                        vars.append(
+                            self.parse_families(site, cell_barcode, umi_families)
+                        )
                 indels = sum((var[1:3] for var in vars), [])
                 if any([x != indels[0] for x in indels]):
                     self.variant_f.writelines(
@@ -135,7 +147,8 @@ class StutRCorrector(Process):
                         next(iter(umi_families.values()))[0].query_alignment_sequence
                     )
                     self.sites_kept.add(" ".join(map(str, site_list)) + "\n")
-                    self.bc_kept.update(cell_dict.keys())
+                    if not self.has_cells:
+                        self.cells.update(cell_dict.keys())
                 if self.iter % self.log_every == 0:
                     logging.info(
                         "Iteration {}, removed {} reads across {} umi families out of {}. Memory usage: {}%.".format(
@@ -159,7 +172,7 @@ class StutRCorrector(Process):
                     dst.write(site)
             bc_path = self.pr_path.format("cells", "txt")
             with open(bc_path, "w") as dst:
-                dst.write("\n".join(self.bc_kept))
+                dst.write("\n".join(self.cells))
             info_path = self.pr_path.format("info", "h5")
             logging.info(f"Saving info into temporary file {info_path}.")
             save_h5(info_path, self.info)

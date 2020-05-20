@@ -11,6 +11,7 @@ import random
 import fileinput
 import multiprocessing
 
+import numpy as np
 from functools import reduce
 from operator import iadd
 from reader import FilestreamBED
@@ -18,6 +19,74 @@ from h5_util import concatenate_files, save_h5
 from stutter_corrector import StutRCorrector
 from multiprocessing import Manager, Process, cpu_count
 from logger import start_process_logging, stop_process_logging, config_root_logger
+
+
+def get_paths(logs_dir, itype, ext, sort=True):
+    files = glob.glob(os.path.join(logs_dir, f"{itype}*.{ext}"))
+    if sort:
+        return sorted(files)
+    return files
+
+
+def merge_files(logs_dir, itype, ext="txt", sort=True, to_set=False, has_header=False):
+    out_path = os.path.join(logs_dir, f"{itype}.{ext}")
+    in_paths = get_paths(logs_dir, itype, ext, sort=sort)
+    logging.info(f"Saving {itype} in {out_path}...")
+    if to_set:
+        lines = set()
+        for path in in_paths:
+            lines.update(open(path, "r").read().splitlines())
+    else:
+        lines = map(lambda x: x.rstrip("\n"), fileinput.input(in_paths))
+    with open(out_path, "w") as dst:
+        if has_header:
+            header = next(iter(lines))
+            dst.write(header)
+            dst.write("\n".join(filter(lambda x: x != header, lines)))
+        else:
+            dst.write("\n".join(lines))
+    logging.info("Removing temporary files...")
+    for f in in_paths:
+        os.remove(f)
+
+
+def calls_to_array(logs_dir):
+
+    src_path = os.path.join(logs_dir, "{}.txt")
+    barcodes = {
+        v: i
+        for i, v in enumerate(open(src_path.format("cells"), "r").read().splitlines())
+    }
+    # sites = [s.split()[:2] for s in open(src_path.format('sites'), "r")][1:]
+    # sites = {tuple(v): i for i, v in enumerate(sorted(sites))}
+    n_bc = len(barcodes)
+    logging.info(f"Number variant cells: {n_bc}.")
+
+    dst_path = os.path.join(logs_dir, "variants_{}.csv")
+    logging.info(f"Saving into {dst_path.format(1)}...")
+    dst_1 = open(dst_path.format(1), "w")
+    logging.info(f"saving into {dst_path.format(2)}...")
+    dst_2 = open(dst_path.format(2), "w")
+
+    logging.info("Scanning variants...")
+    with open(src_path.format("variants"), "r") as src:
+        next(src)
+        s = None
+        var_1, var_2 = [66] * n_bc, [66] * n_bc
+        for l in src:
+            l = l.strip("\n").split()
+            i = barcodes[l[2]]
+            if not s:
+                s = (l[0], l[1])
+            elif (l[0], l[1]) != s:
+                dst_1.write(" ".join(map(str, var_1)) + "\n")
+                dst_2.write(" ".join(map(str, var_2)) + "\n")
+                var_1, var_2 = [66] * n_bc, [66] * n_bc
+            var_1[i] = int(l[3])
+            var_2[i] = int(l[4])
+    dst_1.close()
+    dst_2.close()
+
 
 if __name__ == "__main__":
 
@@ -104,30 +173,23 @@ if __name__ == "__main__":
                     logging.info(f"Process {i} is not alive anymore!")
 
     info_path = os.path.join(logs_dir, "info.h5")
-    info_files = glob.glob(os.path.join(logs_dir, "*.h5"))
+    info_files = get_paths(logs_dir, "info", "h5")
     logging.info(f"Saving info in {info_path}...")
     info = concatenate_files(info_path, info_files,)
     logging.info("Removing temporary files...")
     for f in info_files:
         os.remove(f)
 
-    log_path = os.path.join(logs_dir, "process.log")
-    log_files = glob.glob(os.path.join(logs_dir, "*-*.log"))
-    with open(log_path, "w") as file:
-        input_lines = fileinput.input(log_files)
-        file.writelines(input_lines)
-    for f in log_files:
-        os.remove(f)
+    merge_files(logs_dir, "sites", has_header=True)
+    merge_files(logs_dir, "cells", sort=False, to_set=True)
+    merge_files(logs_dir, "variants", sort=False, has_header=True)
+    merge_files(logs_dir, "process", "log")
+    merge_files(logs_dir, "rm", sort=False)
 
-    rm_path = os.path.join(logs_dir, "rm_reads.txt")
-    rm_files = glob.glob(os.path.join(logs_dir, "rm*.txt"))
-    with open(rm_path, "w") as fout:
-        fin = fileinput.input(rm_files)
-        for line in fin:
-            fout.write(line)
-    for f in rm_files:
-        os.remove(f)
+    logging.info("Converting calls into arrays...")
+    calls_to_array(logs_dir)
 
+    rm_path = os.path.join(logs_dir, "rm.txt")
     rm_reads = set(open(rm_path).read().splitlines())
     head, ext = os.path.splitext(config["bam"])
     bam_name = os.path.basename(head) + "_out" + ext

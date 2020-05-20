@@ -28,7 +28,7 @@ from read_util import (
 )
 
 
-def str_to_regions(lines, chr_tag=""):
+def str_to_regions(lines, site_keys=None, chr_tag=""):
     while lines:
         line = lines.pop()
         if line.startswith("#"):
@@ -36,12 +36,7 @@ def str_to_regions(lines, chr_tag=""):
         line = line.strip().upper().replace("CHR", chr_tag).split()
         if not (line[0].isdigit() or line[0] in ["X", "Y"]):
             continue
-        region = {
-            "chrom": line[0],  # .split('_')[0],
-            "start": int(line[1]),
-            "stop": int(line[2]),
-            "motif_len": int(line[3]),
-        }
+        region = {k: int(v) if v.isdigit() else v for k, v in zip(site_keys, line)}
         yield region
 
 
@@ -99,18 +94,48 @@ class StutRCorrector(Process):
             start=[],
             stop=[],
         )
+        self.sites_kept = set()
+        self.bc_kept = set()
+        self.site_keys = ["chrom", "start", "stop", "motif_len"]
+        self.variant_f = open(self.pr_path.format("variants", "txt"), "w")
+        self.variant_f.write(
+            "chrom start cb a1 a2 n-umi-1 n-umi-2 n-reads-1 n-reads-2\n"
+        )
+
+    @property
+    def pr_path(self):
+        return os.path.join(
+            self.logs_dir, "{}_" + str(self.name).replace(" ", "-") + ".{}"
+        )
 
     def run(self):
         log_handler = start_process_logging(self.logs_dir)
         try:
-            for site in str_to_regions(self.sites):
+
+            for site in str_to_regions(self.sites, self.site_keys):
                 self.iter += 1
                 start = site["start"] - self.pad_left
                 stop = site["stop"] + self.pad_right
                 cell_dict = self.get_cell_families(site)
                 cell_dict = get_umi_families(cell_dict)
+                vars = []
                 for cell_barcode, umi_families in cell_dict.items():
-                    self.parse_families(site, umi_families)
+                    vars.append(self.parse_families(site, cell_barcode, umi_families))
+                indels = sum((var[1:3] for var in vars), [])
+                if any([x != indels[0] for x in indels]):
+                    self.variant_f.writelines(
+                        [
+                            " ".join(map(str, [site["chrom"], site["start"]] + var))
+                            + "\n"
+                            for var in vars
+                        ]
+                    )
+                    site_list = [site[key] for key in self.site_keys]
+                    site_list.append(
+                        next(iter(umi_families.values()))[0].query_alignment_sequence
+                    )
+                    self.sites_kept.add(" ".join(map(str, site_list)) + "\n")
+                    self.bc_kept.update(cell_dict.keys())
                 if self.iter % self.log_every == 0:
                     logging.info(
                         "Iteration {}, removed {} reads across {} umi families out of {}. Memory usage: {}%.".format(
@@ -123,18 +148,27 @@ class StutRCorrector(Process):
                     )
             logging.info(f"Saving {len(self.rm_reads)} reads to remove.")
             # self.send_end.send(self.rm_reads)
-            rm_path = os.path.join(self.logs_dir, f"rm_{self.name}.txt")
+            self.variant_f.close()
+            rm_path = self.pr_path.format("rm", "txt")
             with open(rm_path, "w") as dst:
                 dst.write("\n".join(self.rm_reads))
-            dst_path = os.path.join(self.logs_dir, f"info_{self.name}.h5").replace(
-                " ", "-"
-            )
-            logging.info(f"Saving info into temporary file {dst_path}.")
-            save_h5(dst_path, self.info)
+            site_path = self.pr_path.format("sites", "txt")
+            with open(site_path, "w") as dst:
+                dst.write(" ".join(self.site_keys + ["seq"]) + "\n")
+                for site in sorted(self.sites_kept):
+                    dst.write(site)
+            bc_path = self.pr_path.format("cells", "txt")
+            with open(bc_path, "w") as dst:
+                dst.write("\n".join(self.bc_kept))
+            info_path = self.pr_path.format("info", "h5")
+            logging.info(f"Saving info into temporary file {info_path}.")
+            save_h5(info_path, self.info)
+
         except Exception as e:
             tb = traceback.format_exc()
             print(tb)
             raise e
+
         stop_process_logging(log_handler)
 
     def get_cell_families(self, site):
@@ -145,7 +179,7 @@ class StutRCorrector(Process):
         cell_dict = {}
         start = site["start"] - self.pad_left
         stop = site["stop"] + self.pad_right
-        for read in self.bam.fetch(site["chrom"], max(start, 1), stop):
+        for read in self.bam.fetch(str(site["chrom"]), max(start, 1), stop):
             if read.is_secondary or read.is_supplementary:
                 continue
             if not covers_str(read, site):
@@ -158,13 +192,13 @@ class StutRCorrector(Process):
 
         return cell_dict
 
-    def parse_families(self, site, umi_families):
+    def parse_families(self, site, cell_barcode, umi_families):
 
         indels_by_read = dict()
         indels_by_family = dict()
         n_by_indel = dict()
         n_reads = 0
-        alleles_kept = set()
+        alleles_kept = []
 
         for UMI, family in umi_families.items():
             n_reads += len(family)
@@ -176,10 +210,18 @@ class StutRCorrector(Process):
                 indels_by_read[UMI] = indels
                 indels_by_family[UMI] = dict(zip(uni, counts))
             else:
-                alleles_kept.add(uni[0])
+                alleles_kept.append(uni[0])
 
         if len(n_by_indel) < 2:
-            return
+            return [
+                cell_barcode,
+                u,
+                u,
+                len(umi_families),
+                len(umi_families),
+                n_by_indel[u],
+                n_by_indel[u],
+            ]
 
         # finding most probable indel
         indel_by_umi = dict()
@@ -190,7 +232,13 @@ class StutRCorrector(Process):
             n_umi_corr += 1
             indel_by_umi[umi] = max(v, key=lambda x: 10 * v[x] + n_by_indel[x])
 
-        alleles_kept.update(set(indel_by_umi.values()))
+        alleles_kept += list(indel_by_umi.values())
+        uni, counts = np.unique(alleles_kept, return_counts=True)
+        if len(uni) == 1:
+            i2, i1 = 0, 0
+        else:
+            i2, i1 = np.argsort(counts)[-2:]
+
         self.n_corr += n_umi_corr
         self.n_umi += len(umi_families)
         n_reads = sum(list(n_by_indel.values()))
@@ -218,7 +266,7 @@ class StutRCorrector(Process):
                 r.query_name for r, b in zip(umi_families[umi], is_concordant) if not b
             ]
             n_reads_umi = len(indels_by_read[umi])
-            bq = map(lambda r: np.mean(r.query_qualities), umi_families[umi])
+            bq = list(map(lambda r: np.mean(r.query_qualities), umi_families[umi]))
 
             umi_info = dict(
                 cfreq=n_by_indel[x] / n_reads,
@@ -230,8 +278,8 @@ class StutRCorrector(Process):
                 / sum(is_concordant),
                 nucl=nucl,
                 motif_len=site["motif_len"],
-                chrom=int(site["chrom"])
-                if site["chrom"].isdigit()
+                chrom=site["chrom"]
+                if isinstance(site["chrom"], int)
                 else ord(site["chrom"]),
                 start=site["start"],
                 stop=site["stop"],
@@ -246,7 +294,9 @@ class StutRCorrector(Process):
             n_reads_corr=n_reads_corr,
             nucl=nucl,
             motif_len=site["motif_len"],
-            chrom=int(site["chrom"]) if site["chrom"].isdigit() else ord(site["chrom"]),
+            chrom=site["chrom"]
+            if isinstance(site["chrom"], int)
+            else ord(site["chrom"]),
             alleles=len(n_by_indel),
             alleles_kept=len(alleles_kept),
             start=site["start"],
@@ -254,6 +304,16 @@ class StutRCorrector(Process):
         )
         for k, v in global_info.items():
             self.info["global"][k].append(v)
+
+        return [
+            cell_barcode,
+            uni[i1],
+            uni[i2],
+            counts[i1],
+            counts[i2],
+            n_by_indel[uni[i1]],
+            n_by_indel[uni[i2]],
+        ]
 
 
 def get_umi_families(cell_dict):

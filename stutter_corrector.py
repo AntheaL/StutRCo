@@ -18,6 +18,7 @@ from logger import start_process_logging, stop_process_logging
 from reader import FilestreamBED
 
 from h5_util import save_h5
+from collections import OrderedDict
 from read_util import (
     covers_str,
     expanded_seq,
@@ -36,7 +37,10 @@ def str_to_regions(lines, site_keys=None, chr_tag=""):
         line = line.strip().upper().replace("CHR", chr_tag).split()
         if not (line[0].isdigit() or line[0] in ["X", "Y"]):
             continue
-        region = {k: int(v) if v.isdigit() else v for k, v in zip(site_keys, line)}
+        region = {
+            key: int(line[int(i)]) if line[int(i)].isdigit() else line[int(i)]
+            for key, i in site_keys.items()
+        }
         yield region
 
 
@@ -52,6 +56,8 @@ class StutRCorrector(Process):
         log_every=25000,
         pad_left=15,
         pad_right=20,
+        site_keys=None,
+        add_seq=False,
         chr_tag="",
         **kwargs,
     ):
@@ -64,6 +70,7 @@ class StutRCorrector(Process):
         # self.send_end = send_end
         self.pad_left = int(pad_left)
         self.pad_right = int(pad_right)
+        self.add_seq = add_seq
         self.iter = 0
         self.n_corr = 0
         self.n_umi = 0
@@ -97,12 +104,19 @@ class StutRCorrector(Process):
         )
         self.sites_kept = set()
         if cells is not None:
-            self.cells = set(open(cells, "r").read().splitlines())
+            self.cells = set(
+                map(lambda x: x.split()[0], open(cells, "r").read().splitlines())
+            )
             self.has_cells = True
         else:
             self.cells = set()
             self.has_cells = False
-        self.site_keys = ["chrom", "start", "stop", "motif_len"]
+        if site_keys is None:
+            self.site_keys = OrderedDict(
+                {v: i for i, v in enumerate(["chrom", "start", "stop"])}
+            )
+        else:
+            self.site_keys = OrderedDict(site_keys)
         self.variant_f = open(self.pr_path.format("variants", "txt"), "w")
         self.variant_f.write(
             "chrom start cb a1 a2 n-umi-1 n-umi-2 n-reads-1 n-reads-2\n"
@@ -130,6 +144,7 @@ class StutRCorrector(Process):
                     if not self.has_cells or (
                         self.has_cells and cell_barcode in self.cells
                     ):
+                        self.n_umi += len(umi_families)
                         vars.append(
                             self.parse_families(site, cell_barcode, umi_families)
                         )
@@ -143,9 +158,12 @@ class StutRCorrector(Process):
                         ]
                     )
                     site_list = [site[key] for key in self.site_keys]
-                    site_list.append(
-                        next(iter(umi_families.values()))[0].query_alignment_sequence
-                    )
+                    if self.add_seq:
+                        site_list.append(
+                            next(iter(umi_families.values()))[
+                                0
+                            ].query_alignment_sequence
+                        )
                     self.sites_kept.add(" ".join(map(str, site_list)) + "\n")
                     if not self.has_cells:
                         self.cells.update(cell_dict.keys())
@@ -167,7 +185,10 @@ class StutRCorrector(Process):
                 dst.write("\n".join(self.rm_reads))
             site_path = self.pr_path.format("sites", "txt")
             with open(site_path, "w") as dst:
-                dst.write(" ".join(self.site_keys + ["seq"]) + "\n")
+                names = list(self.site_keys.keys())
+                if self.add_seq:
+                    names.append("seq")
+                dst.write(" ".join(names) + "\n")
                 for site in sorted(self.sites_kept):
                     dst.write(site)
             bc_path = self.pr_path.format("cells", "txt")
@@ -253,7 +274,6 @@ class StutRCorrector(Process):
             i2, i1 = np.argsort(counts)[-2:]
 
         self.n_corr += n_umi_corr
-        self.n_umi += len(umi_families)
         n_reads = sum(list(n_by_indel.values()))
         n_reads_corr = 0
 
@@ -276,7 +296,9 @@ class StutRCorrector(Process):
             is_concordant = [n == x for n in indels_by_read[umi]]
             n_reads_corr += sum(map(lambda x: 1 - x, is_concordant))
             self.rm_reads += [
-                r.query_name for r, b in zip(umi_families[umi], is_concordant) if not b
+                " ".join((r.query_name, r.cigarstring))
+                for r, b in zip(umi_families[umi], is_concordant)
+                if not b
             ]
             n_reads_umi = len(indels_by_read[umi])
             bq = list(map(lambda r: np.mean(r.query_qualities), umi_families[umi]))

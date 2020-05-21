@@ -41,7 +41,7 @@ def merge_files(logs_dir, itype, ext="txt", sort=True, to_set=False, has_header=
     with open(out_path, "w") as dst:
         if has_header:
             header = next(iter(lines))
-            dst.write(header)
+            dst.write(header + "\n")
             dst.write("\n".join(filter(lambda x: x != header, lines)))
         else:
             dst.write("\n".join(lines))
@@ -82,6 +82,7 @@ def calls_to_array(logs_dir):
                 dst_1.write(" ".join(map(str, var_1)) + "\n")
                 dst_2.write(" ".join(map(str, var_2)) + "\n")
                 var_1, var_2 = [66] * n_bc, [66] * n_bc
+                s = (l[0], l[1])
             var_1[i] = int(l[3])
             var_2[i] = int(l[4])
     dst_1.close()
@@ -206,7 +207,7 @@ if __name__ == "__main__":
     n_wrote = 0
     log_every = int(config["write_log_every"])
     for read in bam_in.fetch():
-        if read.query_name not in rm_reads:
+        if " ".join((read.query_name, read.cigarstring)) not in rm_reads:
             bam_out.write(read)
             n_wrote += 1
         n_parsed += 1

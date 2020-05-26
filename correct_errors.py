@@ -85,6 +85,9 @@ def calls_to_array(logs_dir):
                 s = (l[0], l[1])
             var_1[i] = int(l[3])
             var_2[i] = int(l[4])
+    if any(x != 66 for x in var_1):
+        dst_1.write(" ".join(map(str, var_1)) + "\n")
+        dst_2.write(" ".join(map(str, var_2)) + "\n")
     dst_1.close()
     dst_2.close()
 

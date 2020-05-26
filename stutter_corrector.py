@@ -56,6 +56,8 @@ class StutRCorrector(Process):
         log_every=25000,
         pad_left=15,
         pad_right=20,
+        min_reads=2,
+        min_freq=0.65,
         site_keys=None,
         add_seq=False,
         chr_tag="",
@@ -70,6 +72,8 @@ class StutRCorrector(Process):
         # self.send_end = send_end
         self.pad_left = int(pad_left)
         self.pad_right = int(pad_right)
+        self.min_reads = min_reads
+        self.min_freq = min_freq
         self.add_seq = add_seq
         self.iter = 0
         self.n_corr = 0
@@ -94,6 +98,8 @@ class StutRCorrector(Process):
             n_umi_corr=[],
             n_reads=[],
             n_reads_corr=[],
+            f_min_reads=[],
+            f_min_freq=[],
             nucl=[],
             motif_len=[],
             alleles=[],
@@ -177,6 +183,8 @@ class StutRCorrector(Process):
                             psutil.virtual_memory().percent,
                         )
                     )
+
+            self.rm_reads = set(self.rm_reads)
             logging.info(f"Saving {len(self.rm_reads)} reads to remove.")
             # self.send_end.send(self.rm_reads)
             self.variant_f.close()
@@ -232,9 +240,16 @@ class StutRCorrector(Process):
         indels_by_family = dict()
         n_by_indel = dict()
         n_reads = 0
+        f_min_reads = 0
+        f_min_freq = 0
         alleles_kept = []
 
         for UMI, family in umi_families.items():
+            if len(family) < self.min_reads:
+                self.rm_reads += [
+                    " ".join((r.query_name, r.cigarstring)) for r in family
+                ]
+                f_min_reads += 1
             n_reads += len(family)
             indels = overlap_noise(family, site)
             uni, counts = np.unique(indels, return_counts=True)
@@ -246,7 +261,7 @@ class StutRCorrector(Process):
             else:
                 alleles_kept.append(uni[0])
 
-        if len(n_by_indel) < 2:
+        if len(n_by_indel) == 1:
             return [
                 cell_barcode,
                 u,
@@ -293,19 +308,27 @@ class StutRCorrector(Process):
             read = AlignedSegment.from_dict(rdict)
             """
 
+            n_reads_umi = len(indels_by_read[umi])
             is_concordant = [n == x for n in indels_by_read[umi]]
             n_reads_corr += sum(map(lambda x: 1 - x, is_concordant))
-            self.rm_reads += [
-                " ".join((r.query_name, r.cigarstring))
-                for r, b in zip(umi_families[umi], is_concordant)
-                if not b
-            ]
-            n_reads_umi = len(indels_by_read[umi])
+
+            freq = indels_by_family[umi][x] / n_reads_umi
+            if freq < self.min_freq:
+                self.rm_reads += [
+                    " ".join((r.query_name, r.cigarstring)) for r in umi_families[umi]
+                ]
+                f_min_freq += 1
+            else:
+                self.rm_reads += [
+                    " ".join((r.query_name, r.cigarstring))
+                    for r, b in zip(umi_families[umi], is_concordant)
+                    if not b
+                ]
             bq = list(map(lambda r: np.mean(r.query_qualities), umi_families[umi]))
 
             umi_info = dict(
                 cfreq=n_by_indel[x] / n_reads,
-                freq=indels_by_family[umi][x] / n_reads_umi,
+                freq=freq,
                 count=indels_by_family[umi][x],
                 alleles=len(indels_by_family[umi]),
                 avg_qual=sum(bq) / n_reads_umi,
@@ -327,6 +350,8 @@ class StutRCorrector(Process):
             n_umi_corr=n_umi_corr,
             n_reads=n_reads,
             n_reads_corr=n_reads_corr,
+            f_min_reads=f_min_reads,
+            f_min_freq=f_min_freq,
             nucl=nucl,
             motif_len=site["motif_len"],
             chrom=site["chrom"]

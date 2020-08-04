@@ -88,7 +88,7 @@ class StutRCorrector(Process):
             qual=[],
             avg_qual=[],
             motif_len=[],
-            alleles=[],
+            variants=[],
             chrom=[],
             start=[],
             stop=[],
@@ -102,8 +102,8 @@ class StutRCorrector(Process):
             f_min_freq=[],
             nucl=[],
             motif_len=[],
-            alleles=[],
-            alleles_kept=[],
+            variants=[],
+            variants_kept=[],
             chrom=[],
             start=[],
             stop=[],
@@ -242,7 +242,7 @@ class StutRCorrector(Process):
         n_reads = 0
         f_min_reads = 0
         f_min_freq = 0
-        alleles_kept = []
+        variants_kept = []
 
         for UMI, family in umi_families.items():
             if len(family) < self.min_reads:
@@ -259,7 +259,7 @@ class StutRCorrector(Process):
                 indels_by_read[UMI] = indels
                 indels_by_family[UMI] = dict(zip(uni, counts))
             else:
-                alleles_kept.append(uni[0])
+                variants_kept.append(uni[0])
 
         if len(n_by_indel) == 1:
             return [
@@ -281,8 +281,8 @@ class StutRCorrector(Process):
             n_umi_corr += 1
             indel_by_umi[umi] = max(v, key=lambda x: 10 * v[x] + n_by_indel[x])
 
-        alleles_kept += list(indel_by_umi.values())
-        uni, counts = np.unique(alleles_kept, return_counts=True)
+        variants_kept += list(indel_by_umi.values())
+        uni, counts = np.unique(variants_kept, return_counts=True)
         if len(uni) == 1:
             i2, i1 = 0, 0
         else:
@@ -330,7 +330,7 @@ class StutRCorrector(Process):
                 cfreq=n_by_indel[x] / n_reads,
                 freq=freq,
                 count=indels_by_family[umi][x],
-                alleles=len(indels_by_family[umi]),
+                variants=len(indels_by_family[umi]),
                 avg_qual=sum(bq) / n_reads_umi,
                 qual=sum([x for x, b in zip(bq, is_concordant) if b])
                 / sum(is_concordant),
@@ -357,8 +357,8 @@ class StutRCorrector(Process):
             chrom=site["chrom"]
             if isinstance(site["chrom"], int)
             else ord(site["chrom"]),
-            alleles=len(n_by_indel),
-            alleles_kept=len(alleles_kept),
+            variants=len(n_by_indel),
+            variants_kept=len(variants_kept),
             start=site["start"],
             stop=site["stop"],
         )

@@ -54,5 +54,5 @@ def concatenate_dicts(dicts):
             for k, v in value.items():
                 res[key][k] = np.concatenate([d[key][k] for d in dicts])
         else:
-            res[key] = np.concateate([d[key] for d in dicts])
+            res[key] = np.concatenate([src[key] for src in srcs])
     return res
